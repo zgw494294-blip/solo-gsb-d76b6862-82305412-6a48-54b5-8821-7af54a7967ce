@@ -16,10 +16,15 @@ from .collation import (
     provenance,
     relationships,
 )
+from .fragments import assemble_fragments
 
 MAX_POINTS = 300
 MIN_WITNESSES = 2
 MAX_WITNESSES = 4
+
+MIN_FRAGMENTS = 2
+MAX_FRAGMENTS = 8
+MAX_FRAGMENT_POINTS = 100
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -79,6 +84,15 @@ class ProvenanceRequest(BaseModel):
     query: str
 
 
+class FragmentIn(BaseModel):
+    name: str
+    text: str
+
+
+class FragmentsRequest(BaseModel):
+    fragments: list[FragmentIn]
+
+
 def _validate(base: str, witnesses: list[WitnessIn]):
     """底本与抄本输入校验（对读、校定共用）。"""
     if not 1 <= len(base) <= MAX_POINTS:
@@ -104,6 +118,33 @@ def _validate(base: str, witnesses: list[WitnessIn]):
             )
         names.append(name)
     return [{"name": w.name.strip(), "text": w.text} for w in witnesses]
+
+
+def _validate_fragments(fragments: list[FragmentIn]):
+    """残页拼合输入校验（与对读模块相互独立）。"""
+    if not MIN_FRAGMENTS <= len(fragments) <= MAX_FRAGMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"残页数量须为 {MIN_FRAGMENTS}～{MAX_FRAGMENTS} 张",
+        )
+    names = []
+    cleaned = []
+    for f in fragments:
+        name = f.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="残页名称不能为空")
+        if name in names:
+            raise HTTPException(status_code=400, detail=f"残页名称重复：{name}")
+        if not 1 <= len(f.text) <= MAX_FRAGMENT_POINTS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"残页「{name}」长度须为 1～{MAX_FRAGMENT_POINTS} 个 Unicode 码点"
+                ),
+            )
+        names.append(name)
+        cleaned.append({"name": name, "text": f.text})
+    return cleaned
 
 
 @app.post("/api/collate")
@@ -209,6 +250,19 @@ def api_block_move(req: BlockMoveRequest):
 @app.get("/api/health")
 def api_health():
     return {"status": "ok"}
+
+
+@app.post("/api/fragments")
+def api_fragments(req: FragmentsRequest):
+    fragments = _validate_fragments(req.fragments)
+    result = assemble_fragments(fragments)
+    return {
+        "fragments": [
+            {"name": f["name"], "text": f["text"], "length": len(f["text"])}
+            for f in fragments
+        ],
+        "assembly": result,
+    }
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

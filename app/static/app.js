@@ -6,6 +6,10 @@ const MAX_POINTS = 300;
 const MIN_WITNESSES = 2;
 const MAX_WITNESSES = 4;
 
+const MIN_FRAGMENTS = 2;
+const MAX_FRAGMENTS = 8;
+const MAX_FRAGMENT_POINTS = 100;
+
 const KIND_LABEL = {
   match: "相同",
   substitute: "替换",
@@ -23,6 +27,20 @@ const EXAMPLE = {
   query: "学而时习之，不亦悦乎？有友自远方来，不亦乐乎？",
 };
 
+const FRAGMENT_EXAMPLE = [
+  { name: "残页甲", text: "道可道，非常" },
+  { name: "残页乙", text: "非常名，无名" },
+  { name: "残页丙", text: "名，无名天地之始" },
+  { name: "残页丁", text: "非常名" },
+  { name: "残页戊", text: "道可道，非常" },
+];
+
+const FRAGMENT_STATUS_LABEL = {
+  assembled: "参与拼接",
+  contained: "被更长页包含",
+  duplicate: "同文重复（录入较晚）",
+};
+
 let lastResult = null;
 let lastInput = null; // 最近一次对读的 {base, witnesses}，供校定请求复用
 let selections = {}; // "type:index" -> 所选读法；仅存非默认选择
@@ -32,6 +50,8 @@ let lastRel = null;
 let lastAudit = null;
 let lastWindow = null;
 let lastBlockMove = null;
+let lastAssembly = null;
+let fragmentToken = 0; // 残页拼合独立于对读，单独维护过期响应标记
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
@@ -1191,6 +1211,220 @@ function applySpans(key, spans) {
   }
 }
 
+/* ---------- 残页拼合（独立模块） ---------- */
+
+function addFragmentRow(name = "", text = "") {
+  const list = $("#fragment-list");
+  if (list.children.length >= MAX_FRAGMENTS) return;
+  const row = document.createElement("div");
+  row.className = "fragment-row";
+  row.innerHTML = `
+    <div class="fragment-head">
+      <span class="f-index">残页</span>
+      <input class="f-name" type="text" maxlength="30" placeholder="残页名称（不可重复）">
+      <span class="counter">0/${MAX_FRAGMENT_POINTS}</span>
+      <button type="button" class="btn btn-small btn-remove">删除</button>
+    </div>
+    <textarea class="f-text" rows="2" placeholder="残页文字，1～100 个 Unicode 码点；空白与标点照常参与。"></textarea>
+  `;
+  row.querySelector(".f-name").value = name;
+  row.querySelector(".f-text").value = text;
+  row.querySelector(".btn-remove").addEventListener("click", () => {
+    if (list.children.length <= MIN_FRAGMENTS) {
+      showFragmentError(`至少保留 ${MIN_FRAGMENTS} 张残页。`);
+      return;
+    }
+    row.remove();
+    refreshFragmentRows();
+    clearFragmentResult();
+  });
+  list.appendChild(row);
+  refreshFragmentRows();
+  // 新增残页行即输入变化，旧拼合结果立即失效
+  clearFragmentResult();
+}
+
+function refreshFragmentRows() {
+  const rows = [...document.querySelectorAll("#fragment-list .fragment-row")];
+  rows.forEach((row, i) => {
+    row.querySelector(".f-index").textContent = `残页 ${i + 1}`;
+    row.querySelector(".counter").textContent =
+      `${cplen(row.querySelector(".f-text").value)}/${MAX_FRAGMENT_POINTS}`;
+    row.querySelector(".btn-remove").disabled = rows.length <= MIN_FRAGMENTS;
+  });
+  $("#btn-add-fragment").disabled = rows.length >= MAX_FRAGMENTS;
+}
+
+function validateFragments(fragments) {
+  const names = new Set();
+  for (const f of fragments) {
+    if (!f.name) return "每张残页都必须填写名称。";
+    if (names.has(f.name)) return `残页名称重复：${f.name}`;
+    names.add(f.name);
+    if (!f.text) return `残页「${f.name}」文字不能为空。`;
+    const n = cplen(f.text);
+    if (n > MAX_FRAGMENT_POINTS) {
+      return `残页「${f.name}」长度不得超过 ${MAX_FRAGMENT_POINTS} 个码点。`;
+    }
+  }
+  return null;
+}
+
+function clearFragmentResult() {
+  fragmentToken += 1; // 作废在途拼合请求
+  lastAssembly = null;
+  $("#fragment-result").classList.add("hidden");
+  $("#fragment-error").classList.add("hidden");
+  $("#fragment-error").textContent = "";
+  $("#fragment-order").innerHTML = "";
+  $("#assembly-text").innerHTML = "";
+  $("#fragment-locate").innerHTML = "";
+}
+
+function showFragmentError(msg) {
+  const el = $("#fragment-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+function clearFragmentError() {
+  const el = $("#fragment-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+async function doAssemble() {
+  clearFragmentError();
+  const fragments = [...document.querySelectorAll("#fragment-list .fragment-row")]
+    .map((row) => ({
+      name: row.querySelector(".f-name").value.trim(),
+      text: row.querySelector(".f-text").value,
+    }));
+
+  const err = validateFragments(fragments);
+  if (err) {
+    showFragmentError(err);
+    return;
+  }
+
+  const token = ++fragmentToken;
+  let data;
+  try {
+    const resp = await fetch("/api/fragments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fragments }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      showFragmentError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    showFragmentError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== fragmentToken) return; // 输入已变化，丢弃过期结果
+
+  lastAssembly = data;
+  renderAssembly(data.assembly);
+}
+
+function renderAssembly(asm) {
+  $("#fragment-result").classList.remove("hidden");
+  $("#fragment-summary").textContent =
+    `拼合全文 ${asm.length} 个 Unicode 码点 · 参与拼接 ${asm.participant_count} 张` +
+    `（共重叠 ${asm.total_overlap} 码点）`;
+
+  // 拼接顺序（页名可点击高亮）
+  const order = $("#fragment-order");
+  order.innerHTML = "";
+  asm.order.forEach((step) => {
+    const li = document.createElement("li");
+    const chip = document.createElement("span");
+    chip.className = "f-chip";
+    chip.textContent = `${step.index} ${step.name}`;
+    chip.addEventListener("click", () => selectFragment(step.index, chip));
+    li.appendChild(chip);
+    if (step.overlap > 0) {
+      const ov = document.createElement("span");
+      ov.className = "f-overlap";
+      ov.textContent = `与前页重叠 ${step.overlap} 码点`;
+      li.appendChild(ov);
+    } else {
+      const ov = document.createElement("span");
+      ov.className = "f-overlap";
+      ov.textContent = "首页";
+      li.appendChild(ov);
+    }
+    order.appendChild(li);
+  });
+
+  // 拼合全文：按 Unicode 码点逐字渲染，便于区间高亮
+  const text = $("#assembly-text");
+  text.innerHTML = "";
+  [...asm.text].forEach((ch, i) => {
+    const el = document.createElement("span");
+    el.className = "ch";
+    el.dataset.i = String(i);
+    el.textContent = ch;
+    text.appendChild(el);
+  });
+
+  // 逐张残页定位（含未参与拼接者）
+  const locate = $("#fragment-locate");
+  locate.innerHTML = "";
+  asm.fragments.forEach((f) => {
+    const li = document.createElement("li");
+    const chip = document.createElement("span");
+    chip.className = "f-chip";
+    chip.textContent = `${f.index} ${f.name}`;
+    chip.addEventListener("click", () => selectFragment(f.index, chip));
+
+    const status = document.createElement("span");
+    status.className = `f-status f-${f.status}`;
+    status.textContent = FRAGMENT_STATUS_LABEL[f.status] || f.status;
+
+    const meta = document.createElement("span");
+    meta.className = "f-meta";
+    meta.textContent = `全文 ${f.length} 码点 · 最早出现区间 [${f.span[0]}, ${f.span[1]})`;
+
+    li.append(chip, status, meta);
+    locate.appendChild(li);
+  });
+
+  $("#fragment-result").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function selectFragment(index, chipEl) {
+  const asm = lastAssembly ? lastAssembly.assembly : null;
+  if (!asm) return;
+  const f = asm.fragments.find((x) => x.index === index);
+  if (!f) return;
+
+  // 同步两处页名（拼接顺序、残页定位）的激活态：同名两处同时高亮
+  const label = chipEl.textContent;
+  document.querySelectorAll("#fragment-order .f-chip, #fragment-locate .f-chip")
+    .forEach((el) => el.classList.toggle("active", el.textContent === label));
+  document.querySelectorAll("#assembly-text .hl").forEach((el) =>
+    el.classList.remove("hl")
+  );
+
+  for (let i = f.span[0]; i < f.span[1]; i++) {
+    const el = document.querySelector(`#assembly-text .ch[data-i="${i}"]`);
+    if (el) el.classList.add("hl");
+  }
+  const first = document.querySelector("#assembly-text .hl");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
+function fillFragmentExample() {
+  $("#fragment-list").innerHTML = "";
+  FRAGMENT_EXAMPLE.forEach((f) => addFragmentRow(f.name, f.text));
+  refreshFragmentRows();
+  clearFragmentResult();
+}
+
 /* ---------- JSON 下载 ---------- */
 
 function downloadJson() {
@@ -1274,6 +1508,18 @@ function init() {
   addWitnessRow();
   $("#base-counter").textContent = `0/${MAX_POINTS}`;
   $("#query-counter").textContent = `0/${MAX_POINTS}`;
+
+  // 残页拼合：独立录入区，任一输入变化即清空旧结果并作废在途请求。
+  $("#fragment-section").addEventListener("input", (ev) => {
+    if (ev.target.classList.contains("f-text")) refreshFragmentRows();
+    clearFragmentResult();
+  });
+  $("#btn-add-fragment").addEventListener("click", () => addFragmentRow());
+  $("#btn-fragment-example").addEventListener("click", fillFragmentExample);
+  $("#btn-assemble").addEventListener("click", doAssemble);
+
+  addFragmentRow();
+  addFragmentRow();
 }
 
 document.addEventListener("DOMContentLoaded", init);

@@ -10,6 +10,10 @@
   <header>
     <h1>异文对读台</h1>
     <p class="subtitle">以底本为坐标，对读 2～4 份具名抄本；按全局最小编辑距离对齐，逐字列出异文，并对一份待鉴文本做来源分段、构造抄本异文距离树、截取最短抄本鉴别片段、定位单次片段搬移。</p>
+    <nav class="top-nav">
+      <a href="#input-section">异文对读</a>
+      <a href="#fragment-section">残页拼合</a>
+    </nav>
   </header>
 
   <main>
@@ -102,6 +106,35 @@
         <p class="edition-hint">判断每份抄本能否由底本一次连续片段搬移得到：从底本剪出非空码点半开区间 [i,j)，在删除后的文本中另选插入索引 k 插回，拼合结果须与抄本逐码点完全相同（空白与标点照常参与）。多种方案时先取片段最短，再取 i、k 最小者。底本与抄本相同为「未搬移」，长度不同或无方案为「不能以单次搬移解释」。点击可定位的条目，在上方原文对照中同时高亮底本片段与它在抄本中的新位置。</p>
         <div id="blockmove-error" class="error hidden"></div>
         <div id="blockmove-result" class="blockmove-result"></div>
+      </div>
+    </section>
+
+    <section class="card" id="fragment-section">
+      <h2>残页拼合</h2>
+      <p class="edition-hint">独立录入 2～8 张具名残页，每张 1～100 个 Unicode 码点，名称不可重复；原样比较码点，空白与标点照常参与。全文被更长页包含的残页、同文重复页中录入较晚者不参与拼接（仍须定位）；其余残页每张使用一次，按前页后缀与后页前缀的最长重叠（可为零）顺序拼接，取全文码点数最少者，并列先取全文字典序最小，再取参与拼接的录入序号序列最小。</p>
+
+      <div id="fragment-list"></div>
+
+      <div class="btn-row">
+        <button id="btn-add-fragment" class="btn" type="button">＋ 添加残页</button>
+        <button id="btn-fragment-example" class="btn" type="button">填入示例</button>
+        <button id="btn-assemble" class="btn btn-primary" type="button">开始拼合</button>
+      </div>
+      <div id="fragment-error" class="error hidden"></div>
+
+      <div id="fragment-result" class="fragment-result hidden">
+        <div class="result-bar">
+          <span id="fragment-summary"></span>
+        </div>
+
+        <h3>拼接顺序</h3>
+        <ol id="fragment-order" class="fragment-order"></ol>
+
+        <h3>拼合全文（点击页名高亮该残页在全文中的区间）</h3>
+        <div id="assembly-text" class="assembly-text"></div>
+
+        <h3>残页定位</h3>
+        <ol id="fragment-locate" class="fragment-locate"></ol>
       </div>
     </section>
   </main>
