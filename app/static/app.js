@@ -5,6 +5,9 @@
 const MAX_POINTS = 300;
 const MIN_WITNESSES = 2;
 const MAX_WITNESSES = 4;
+const MIN_FRAGMENTS = 2;
+const MAX_FRAGMENTS = 8;
+const MAX_FRAGMENT_POINTS = 100;
 
 const KIND_LABEL = {
   match: "相同",
@@ -23,6 +26,14 @@ const EXAMPLE = {
   query: "学而时习之，不亦悦乎？有友自远方来，不亦乐乎？",
 };
 
+const FRAGMENT_EXAMPLE = [
+  { name: "甲页", text: "学而时习之，不亦说乎？" },
+  { name: "乙页", text: "不亦说乎？有朋自远方来，" },
+  { name: "丙页", text: "自远方来，不亦乐乎？" },
+  { name: "丁页", text: "时习之" },
+  { name: "戊页", text: "自远方来，不亦乐乎？" },
+];
+
 let lastResult = null;
 let lastInput = null; // 最近一次对读的 {base, witnesses}，供校定请求复用
 let selections = {}; // "type:index" -> 所选读法；仅存非默认选择
@@ -32,9 +43,11 @@ let lastRel = null;
 let lastAudit = null;
 let lastWindow = null;
 let lastBlockMove = null;
+let lastAssembly = null;
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
+let fragmentToken = 0; // 残页拼合在途请求序号，输入变化即作废旧响应
 
 const $ = (sel) => document.querySelector(sel);
 const cplen = (s) => [...s].length;
@@ -1146,6 +1159,215 @@ function selectBlockMove(w, index, li) {
   if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
 }
 
+/* ---------- 残页拼合 ---------- */
+
+function addFragmentRow(name = "", text = "") {
+  const list = $("#fragment-list");
+  if (list.children.length >= MAX_FRAGMENTS) return;
+  const row = document.createElement("div");
+  row.className = "fragment-row";
+  row.innerHTML = `
+    <div class="fragment-head">
+      <span class="f-index">残页</span>
+      <input class="w-name" type="text" maxlength="30" placeholder="残页名称（如：甲页）">
+      <span class="counter">0/${MAX_FRAGMENT_POINTS}</span>
+      <button type="button" class="btn btn-small btn-remove">删除</button>
+    </div>
+    <textarea class="w-text" rows="2" placeholder="残页文字，1～${MAX_FRAGMENT_POINTS} 个 Unicode 码点；空白与标点照常参与。"></textarea>
+  `;
+  row.querySelector(".w-name").value = name;
+  row.querySelector(".w-text").value = text;
+  row.querySelector(".btn-remove").addEventListener("click", () => {
+    if (list.children.length <= MIN_FRAGMENTS) {
+      showFragmentError(`至少保留 ${MIN_FRAGMENTS} 张残页。`);
+      return;
+    }
+    row.remove();
+    refreshFragmentRows();
+    clearAssembly();
+  });
+  list.appendChild(row);
+  refreshFragmentRows();
+  // 新增残页行即输入变化，旧拼合结果立即失效
+  clearAssembly();
+}
+
+function refreshFragmentRows() {
+  const rows = [...document.querySelectorAll("#fragment-list .fragment-row")];
+  rows.forEach((row, i) => {
+    row.querySelector(".f-index").textContent = `残页 ${i + 1}`;
+    row.querySelector(".counter").textContent =
+      `${cplen(row.querySelector(".w-text").value)}/${MAX_FRAGMENT_POINTS}`;
+    row.querySelector(".btn-remove").disabled = rows.length <= MIN_FRAGMENTS;
+  });
+  $("#btn-add-fragment").disabled = rows.length >= MAX_FRAGMENTS;
+}
+
+function validateFragments(pages) {
+  if (pages.length < MIN_FRAGMENTS || pages.length > MAX_FRAGMENTS) {
+    return `残页数量须为 ${MIN_FRAGMENTS}～${MAX_FRAGMENTS} 张。`;
+  }
+  const names = new Set();
+  for (const p of pages) {
+    if (!p.name) return "每张残页都必须填写名称。";
+    if (names.has(p.name)) return `残页名称重复：${p.name}`;
+    names.add(p.name);
+    if (!p.text) return `残页「${p.name}」文字不能为空。`;
+    if (cplen(p.text) > MAX_FRAGMENT_POINTS) {
+      return `残页「${p.name}」长度不得超过 ${MAX_FRAGMENT_POINTS} 个码点。`;
+    }
+  }
+  return null;
+}
+
+function clearAssembly() {
+  fragmentToken += 1;
+  lastAssembly = null;
+  $("#assembly-result").innerHTML = "";
+  $("#fragment-error").textContent = "";
+  $("#fragment-error").classList.add("hidden");
+}
+
+function showFragmentError(msg) {
+  const el = $("#fragment-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+
+async function doAssemble() {
+  const pages = [...document.querySelectorAll("#fragment-list .fragment-row")].map(
+    (row) => ({
+      name: row.querySelector(".w-name").value.trim(),
+      text: row.querySelector(".w-text").value,
+    })
+  );
+
+  const err = validateFragments(pages);
+  if (err) {
+    showFragmentError(err);
+    return;
+  }
+
+  const token = ++fragmentToken;
+  let data;
+  try {
+    const resp = await fetch("/api/fragments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fragments: pages }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      if (token === fragmentToken) showFragmentError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    if (token === fragmentToken) showFragmentError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== fragmentToken) return; // 输入已变化，丢弃过期结果
+  lastAssembly = data;
+  renderAssembly(data);
+}
+
+function assemblyStatus(p) {
+  if (p.participates) return ["参与拼接", "asm-status asm-in"];
+  if (p.reason === "contained") {
+    return ["被更长页包含，不参与拼接", "asm-status asm-out"];
+  }
+  return ["同文重复（录入较晚），不参与拼接", "asm-status asm-out"];
+}
+
+function renderAssembly(data) {
+  const asm = data.assembly;
+  const box = $("#assembly-result");
+  box.innerHTML = "";
+
+  const participating = asm.pages.filter((p) => p.participates).length;
+  const bar = document.createElement("div");
+  bar.className = "prov-summary";
+  bar.textContent =
+    `拼合全文 ${asm.length} 个 Unicode 码点 · 参与拼接 ${participating} 张` +
+    ` · 不参与 ${asm.pages.length - participating} 张（仍定位）`;
+  box.appendChild(bar);
+
+  const order = document.createElement("div");
+  order.className = "asm-order";
+  order.textContent =
+    "拼接顺序：" +
+    asm.order.map((o) => `${o.name}（残页 ${o.index}）`).join(" → ");
+  box.appendChild(order);
+
+  // 拼合全文：逐码点渲染，供按区间高亮
+  const panel = document.createElement("div");
+  panel.className = "text-panel";
+  const head = document.createElement("div");
+  head.className = "text-title";
+  head.textContent = "拼合全文（点击下方页名高亮该页最早出现区间）";
+  const body = document.createElement("div");
+  body.className = "text-body";
+  [...asm.text].forEach((ch, i) => {
+    const span = document.createElement("span");
+    span.className = "ch";
+    span.dataset.key = "asm";
+    span.dataset.i = String(i);
+    span.textContent = ch;
+    body.appendChild(span);
+  });
+  panel.append(head, body);
+  box.appendChild(panel);
+
+  const listHead = document.createElement("h4");
+  listHead.className = "prov-head";
+  listHead.textContent = "残页定位";
+  box.appendChild(listHead);
+
+  const list = document.createElement("ol");
+  list.className = "rel-edges";
+  for (const p of asm.pages) {
+    const li = document.createElement("li");
+    li.className = "rel-edge asm-item";
+    const head = document.createElement("div");
+    head.className = "rel-edge-head";
+    const span = (cls, text) => {
+      const el = document.createElement("span");
+      el.className = cls;
+      el.textContent = text;
+      return el;
+    };
+    head.appendChild(span("rel-endpoints", `残页 ${p.index} ${p.name}`));
+    const [statusText, statusClass] = assemblyStatus(p);
+    head.appendChild(span(statusClass, statusText));
+    head.appendChild(span("asm-span", `最早出现区间 [${p.span[0]}, ${p.span[1]})`));
+    head.addEventListener("click", () => selectAssemblyPage(p, li));
+    li.appendChild(head);
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+}
+
+function selectAssemblyPage(page, li) {
+  document.querySelectorAll(".asm-item.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".ch[data-key='asm'].hl").forEach((el) =>
+    el.classList.remove("hl")
+  );
+  li.classList.add("active");
+  applySpans("asm", [page.span]);
+
+  const first = document.querySelector(".ch[data-key='asm'].hl");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
+function fillFragmentExample() {
+  const list = $("#fragment-list");
+  list.innerHTML = "";
+  FRAGMENT_EXAMPLE.forEach((p) => addFragmentRow(p.name, p.text));
+  refreshFragmentRows();
+  clearAssembly();
+}
+
 /* ---------- 高亮 ---------- */
 
 function selectEntry(entry, data, div) {
@@ -1270,10 +1492,22 @@ function init() {
   $("#btn-download").addEventListener("click", downloadJson);
   $("#btn-download-edition").addEventListener("click", downloadEdition);
 
+  // 残页拼合：任一残页录入（名称／文字）变化，立即清空旧拼合结果
+  $("#fragment-section").addEventListener("input", (ev) => {
+    if (ev.target.classList.contains("w-text")) refreshFragmentRows();
+    clearAssembly();
+  });
+  $("#btn-add-fragment").addEventListener("click", () => addFragmentRow());
+  $("#btn-fragment-example").addEventListener("click", fillFragmentExample);
+  $("#btn-assemble").addEventListener("click", doAssemble);
+
   addWitnessRow();
   addWitnessRow();
   $("#base-counter").textContent = `0/${MAX_POINTS}`;
   $("#query-counter").textContent = `0/${MAX_POINTS}`;
+
+  addFragmentRow();
+  addFragmentRow();
 }
 
 document.addEventListener("DOMContentLoaded", init);

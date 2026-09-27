@@ -10,7 +10,10 @@
 排列的全部坐标上取坐标数最少、能区分每一对抄本的连续窗口，给出底本与各抄本
 按窗口读法拼成的短引文与原文码点区间；还对每份抄本做**单次片段搬移定位**：
 判断抄本文字能否由底本一次连续片段搬移得到，给出底本片段区间、插入索引、
-片段在抄本中的新区间与搬移后全文。
+片段在抄本中的新区间与搬移后全文；还可独立录入 2～8 张具名**残页**做
+**残页拼合**：剔除被更长页包含的残页与同文重复页中录入较晚者后，其余残页
+按前页后缀与后页前缀的最长重叠顺序拼接，求全文码点数最少的结果，并定位
+每张残页在全文中的最早出现区间。
 
 - 后端：Python + FastAPI
 - 前端：原生 HTML / CSS / JavaScript（无构建步骤）
@@ -161,11 +164,28 @@ http://localhost:8000/docs 。
 - 任一录入内容变化或重新对读，旧结果立即清空；在途请求的过期响应
   同样作废。
 
+## 残页拼合
+
+- 在页面「九、残页拼合」区**独立录入 2～8 张具名残页**（与底本／抄本
+  录入互不影响），每张 1～100 个 Unicode 码点，名称不可重复。
+- **原样比较码点**：空白与标点照常参与，不做任何规范化。
+- **不参与拼接**的残页（仍须在全文中定位）：
+  - 全文被**更长页包含**的残页；
+  - **同文重复页**中录入较晚者（同文取录入最早者参与）。
+- 其余残页每张使用一次，按**前页后缀与后页前缀的最长重叠（可为零）**
+  顺序拼接，求**全文码点数最少**的结果；并列先取**全文码点字典序
+  最小**，再取**参与拼接的录入序号序列最小**（录入序号 1 起逐位比较）。
+- 结果给出**拼合全文**、**拼接顺序**，并逐张列出残页在全文中
+  **最早出现的 Unicode 码点半开区间**（`[start, end)`）。
+- 页面展示拼合全文与拼接顺序；**点击页名**即在全文中高亮该页的最早
+  出现区间。任一残页录入（名称／文字）变化，旧拼合结果立即清空；
+  在途请求的过期响应同样作废。
+
 ## 对齐快照缓存
 
 - 其中六个接口（对读、校定、来源分段、距离树、路径审计、最短鉴别片段）
   共享同一**进程内**对齐快照缓存；**单次片段搬移定位不依赖编辑对齐，
-  不经该缓存**。缓存以**原样的 (底本, 文本)** 为键，保存该次对齐的
+  不经该缓存；残页拼合不做编辑对齐，亦不经该缓存**。缓存以**原样的 (底本, 文本)** 为键，保存该次对齐的
   **最小代价表、字典序首条路径及其坐标读法**；路径计数与严格次小路径
   仍基于缓存的代价表逐请求现算，结果与无缓存一致。
 - **抄本名不进入键**：同文不同名的抄本共享同一快照，响应仍按各自录入
@@ -349,21 +369,49 @@ http://localhost:8000/docs 。
 - 多方案按「片段最短 → `i` 最小 → `k` 最小」取舍；空白与标点照常参与。
 - `/api/block-move` 返回的状态与区间与页面第八区完全一致。
 
+`POST /api/fragments`
+
+```json
+{
+  "fragments": [
+    {"name": "甲页", "text": "学而时习之，不亦说乎？"},
+    {"name": "乙页", "text": "不亦说乎？有朋自远方来，"},
+    {"name": "丙页", "text": "自远方来，不亦乐乎？"},
+    {"name": "丁页", "text": "时习之"},
+    {"name": "戊页", "text": "自远方来，不亦乐乎？"}
+  ]
+}
+```
+
+- 残页 2～8 张，每张 1～100 个 Unicode 码点，名称不可重复；数量越界、
+  名称为空／重复或长度越界均返回 400。
+- 响应含 `fragments`（录入回显：`index` 从 1 起，附 `text` 与 `length`）
+  与 `assembly`：
+  - `assembly.text`／`assembly.length`：拼合全文及其码点数；
+  - `assembly.order`：参与拼接的残页按拼接顺序排列（各含 `index` 与 `name`）；
+  - `assembly.pages`：按录入顺序逐张给出 `participates`、`reason`
+    （不参与原因：`contained`＝全文被更长页包含，`duplicate`＝同文重复页
+    中录入较晚；参与为 `null`）与 `span`（该页在全文中最早出现的
+    Unicode 码点半开区间 `[start, end)`）。
+- `/api/fragments` 返回的全文、拼接顺序与各页区间与页面第九区完全一致。
+
 交互式接口文档见 http://localhost:8000/docs 。
 
 ## 目录结构
 
 ```
 app/
-  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit、/api/distinguishing-window、/api/block-move）
+  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit、/api/distinguishing-window、/api/block-move、/api/fragments）
   collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计 + 最短抄本鉴别片段 + 单次片段搬移定位（对齐结果经共享快照缓存取用）
+  fragments.py       残页拼合：被包含页／同文重复页剔除 + 子集动态规划求最短重叠拼接全文 + 逐页最早出现区间
   aligncache.py      进程内共享对齐快照缓存（(底本, 文本) 为键，8 份 LRU，同键单次计算）
   static/
-    index.html       页面（应用入口 http://localhost:8000/）
+    index.html       页面（应用入口 http://localhost:8000/，残页拼合见第九区）
     style.css        样式
     app.js           前端逻辑
 tests/
   test_collation.py  对齐、校勘、校定、来源分段、距离树、路径审计与最短鉴别片段测试（python3 tests/test_collation.py）
+  test_fragments.py  残页拼合规则测试（python3 tests/test_fragments.py）
   test_aligncache.py 对齐快照缓存与缓存下结果一致性测试（python3 tests/test_aligncache.py）
 Dockerfile
 docker-compose.yml   docker compose up --build 即启动应用（端口 8000）

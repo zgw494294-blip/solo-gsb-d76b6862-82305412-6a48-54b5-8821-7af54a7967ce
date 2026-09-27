@@ -16,10 +16,14 @@ from .collation import (
     provenance,
     relationships,
 )
+from .fragments import assemble
 
 MAX_POINTS = 300
 MIN_WITNESSES = 2
 MAX_WITNESSES = 4
+MIN_FRAGMENTS = 2
+MAX_FRAGMENTS = 8
+MAX_FRAGMENT_POINTS = 100
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -65,6 +69,15 @@ class BlockMoveRequest(BaseModel):
     witnesses: list[WitnessIn]
 
 
+class FragmentIn(BaseModel):
+    name: str
+    text: str
+
+
+class FragmentsRequest(BaseModel):
+    fragments: list[FragmentIn]
+
+
 class EditionRequest(BaseModel):
     base: str
     witnesses: list[WitnessIn]
@@ -104,6 +117,29 @@ def _validate(base: str, witnesses: list[WitnessIn]):
             )
         names.append(name)
     return [{"name": w.name.strip(), "text": w.text} for w in witnesses]
+
+
+def _validate_fragments(pages: list[FragmentIn]):
+    """残页录入校验：2～8 张具名残页，每张 1～100 码点，名称不重复。"""
+    if not MIN_FRAGMENTS <= len(pages) <= MAX_FRAGMENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"残页数量须为 {MIN_FRAGMENTS}～{MAX_FRAGMENTS} 张",
+        )
+    names = []
+    for p in pages:
+        name = p.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="残页名称不能为空")
+        if name in names:
+            raise HTTPException(status_code=400, detail=f"残页名称重复：{name}")
+        if not 1 <= len(p.text) <= MAX_FRAGMENT_POINTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"残页「{name}」长度须为 1～{MAX_FRAGMENT_POINTS} 个 Unicode 码点",
+            )
+        names.append(name)
+    return [{"name": p.name.strip(), "text": p.text} for p in pages]
 
 
 @app.post("/api/collate")
@@ -203,6 +239,24 @@ def api_block_move(req: BlockMoveRequest):
             for w in witnesses
         ],
         "block_move": result,
+    }
+
+
+@app.post("/api/fragments")
+def api_fragments(req: FragmentsRequest):
+    fragments = _validate_fragments(req.fragments)
+    result = assemble(fragments)
+    return {
+        "fragments": [
+            {
+                "index": i + 1,
+                "name": f["name"],
+                "text": f["text"],
+                "length": len(f["text"]),
+            }
+            for i, f in enumerate(fragments)
+        ],
+        "assembly": result,
     }
 
 

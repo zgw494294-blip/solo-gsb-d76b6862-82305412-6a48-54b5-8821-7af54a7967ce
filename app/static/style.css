@@ -109,6 +109,30 @@ textarea:focus, input[type="text"]:focus {
   background: #fffaf0;
 }
 
+#fragment-list .fragment-row {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: #fffaf0;
+}
+
+.fragment-row .fragment-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.fragment-row .f-index {
+  font-weight: bold;
+  white-space: nowrap;
+  min-width: 3.5em;
+}
+
+.fragment-row .w-name { flex: 1; }
+.fragment-row .counter { white-space: nowrap; }
+
 .witness-head {
   display: flex;
   align-items: center;
@@ -399,6 +423,29 @@ textarea:focus, input[type="text"]:focus {
 
 .blockmove-result {
   margin-top: 12px;
+}
+
+.assembly-result {
+  margin-top: 14px;
+}
+
+.asm-order {
+  margin: 6px 0 12px;
+}
+
+.asm-status {
+  white-space: nowrap;
+  font-weight: bold;
+}
+
+.asm-in { color: var(--accent); }
+.asm-out { color: var(--muted); }
+
+.asm-span {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
 }
 
 .bm-status {

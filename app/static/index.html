@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>异文对读台</h1>
-    <p class="subtitle">以底本为坐标，对读 2～4 份具名抄本；按全局最小编辑距离对齐，逐字列出异文，并对一份待鉴文本做来源分段、构造抄本异文距离树、截取最短抄本鉴别片段、定位单次片段搬移。</p>
+    <p class="subtitle">以底本为坐标，对读 2～4 份具名抄本；按全局最小编辑距离对齐，逐字列出异文，并对一份待鉴文本做来源分段、构造抄本异文距离树、截取最短抄本鉴别片段、定位单次片段搬移；另可独立录入 2～8 张具名残页，按最长重叠拼合全文并逐页定位。</p>
   </header>
 
   <main>
@@ -103,6 +103,19 @@
         <div id="blockmove-error" class="error hidden"></div>
         <div id="blockmove-result" class="blockmove-result"></div>
       </div>
+    </section>
+
+    <section class="card" id="fragment-section">
+      <h2>九、残页拼合</h2>
+      <p class="edition-hint">独立录入 2～8 张具名残页（每张 1～100 个 Unicode 码点，名称不可重复；原样比较码点，空白与标点照常参与），与上方对读录入互不影响。全文被更长页包含的残页、以及同文重复页中录入较晚者不参与拼接，但仍会在全文中定位；其余残页每张使用一次，按前页后缀与后页前缀的最长重叠（可为零）顺序拼接，取全文码点数最少的结果（并列先取全文码点字典序最小，再取参与拼接的录入序号序列最小）。</p>
+      <div id="fragment-list"></div>
+      <div class="btn-row">
+        <button id="btn-add-fragment" class="btn" type="button">＋ 添加残页</button>
+        <button id="btn-fragment-example" class="btn" type="button">填入示例</button>
+        <button id="btn-assemble" class="btn btn-primary" type="button">开始拼合</button>
+      </div>
+      <div id="fragment-error" class="error hidden"></div>
+      <div id="assembly-result" class="assembly-result"></div>
     </section>
   </main>
 
